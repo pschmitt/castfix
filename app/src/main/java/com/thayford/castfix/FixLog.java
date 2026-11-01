@@ -1,5 +1,6 @@
 package com.thayford.castfix;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Log;
@@ -58,6 +59,30 @@ final class FixLog {
 
     boolean isPaired() {
         return prefs.getBoolean("paired", false);
+    }
+
+    /** Marks a run that is about to switch the wizard on; commit(), so it is on disk before anything changes. */
+    @SuppressLint("ApplySharedPref")
+    void setPending(String home, boolean stockHomeWasOff) {
+        prefs.edit().putBoolean("pending", true).putString("pending_home", home)
+                .putBoolean("pending_stock_off", stockHomeWasOff).commit();
+    }
+
+    @SuppressLint("ApplySharedPref")
+    void clearPending() {
+        prefs.edit().remove("pending").remove("pending_home").remove("pending_stock_off").commit();
+    }
+
+    boolean hasPending() {
+        return prefs.getBoolean("pending", false);
+    }
+
+    String pendingHome() {
+        return prefs.getString("pending_home", null);
+    }
+
+    boolean pendingStockHomeWasOff() {
+        return prefs.getBoolean("pending_stock_off", false);
     }
 
     /** The latest receiver check (CastHealth state), shown on the screen. */

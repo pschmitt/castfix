@@ -54,11 +54,16 @@ final class CastFixer {
         }
         String ip = waitForWifi(90_000);
         if (ip == null) return log.result("No Wi-Fi after 90 s; nothing changed.");
-        // A receiver that signs holds its credentials: nothing to do, and Wireless debugging stays as it is.
-        CastHealth.State state = CastHealth.check(5_000);
-        log.setLastCheck(state.name());
-        log.add("Cast receiver: " + describe(state));
-        if (state == CastHealth.State.SIGNED) return log.result("Casting already works.");
+        boolean interrupted = log.hasPending();
+        if (interrupted) {
+            log.add("the last run was cut short with the setup wizard on; cleaning up first");
+        } else {
+            // A receiver that signs holds its credentials: nothing to do, and Wireless debugging stays as it is.
+            CastHealth.State state = CastHealth.check(5_000);
+            log.setLastCheck(state.name());
+            log.add("Cast receiver: " + describe(state));
+            if (state == CastHealth.State.SIGNED) return log.result("Casting already works.");
+        }
         ContentResolver resolver = context.getContentResolver();
         boolean debuggingWasOn = Settings.Global.getInt(resolver, ADB_WIFI, 0) == 1;
         Settings.Global.putInt(resolver, ADB_WIFI, 1);
@@ -66,7 +71,7 @@ final class CastFixer {
         Settings.Global.putLong(resolver, "adb_allowed_connection_time", 0L);
         try (Shell shell = new Shell(context, ip, log)) {
             if (!shell.connect()) return log.result("Could not reach Wireless debugging on this TV.");
-            return fix(shell);
+            return fix(shell, interrupted);
         } catch (Exception e) {
             log.add("error: " + e);
             return log.result("Failed: " + e.getMessage());
@@ -79,14 +84,21 @@ final class CastFixer {
         }
     }
 
-    private String fix(Shell shell) throws Exception {
+    private String fix(Shell shell, boolean interrupted) throws Exception {
         String disabled = shell.run("pm list packages -d");
+        if (interrupted) {
+            recover(shell, disabled);
+            disabled = shell.run("pm list packages -d");
+            if (CastHealth.check(5_000) == CastHealth.State.SIGNED) return log.result("Cleaned up; casting works.");
+        }
         if (!hasPackage(disabled, SETUP)) {
             return log.result("The setup wizard is on, so casting works without a fix.");
         }
         String home = lastLine(shell.run(HOME_QUERY));
         boolean stockHomeWasOff = hasPackage(disabled, STOCK_HOME);
         log.add("Home is " + home);
+        // Written before anything changes, so a run that dies in the next minute is undone by the next one.
+        log.setPending(home, stockHomeWasOff);
         // Stock launcher first: a Home press in the next minute then lands on it, not on the wizard's
         // RecoveryActivity (seen crash-looping system_server on other Google TV 14 builds).
         if (stockHomeWasOff) shell.run("pm enable --user 0 " + STOCK_HOME);
@@ -111,12 +123,22 @@ final class CastFixer {
         if (!signed) log.add("Cast credentials did not load in time");
         shell.run("pm disable-user --user 0 " + SETUP);
         if (stockHomeWasOff) restoreHome(shell, home);
+        log.clearPending();
         // The receiver keeps them in memory, so this has to hold with the wizard off again.
         CastHealth.State after = CastHealth.check(5_000);
         log.setLastCheck(after.name());
         log.add("with the setup wizard off: " + describe(after));
         if (signed && after == CastHealth.State.SIGNED) return log.result("Casting ready.");
         return log.result("Cast credentials did not load; run it again.");
+    }
+
+    /** Undoes a run that was cut short: the wizard off, and the replacement launcher back as Home. */
+    private void recover(Shell shell, String disabled) throws Exception {
+        if (!hasPackage(disabled, SETUP)) shell.run("pm disable-user --user 0 " + SETUP);
+        String home = log.pendingHome();
+        if (log.pendingStockHomeWasOff() && home != null) restoreHome(shell, home);
+        log.clearPending();
+        log.add("setup wizard off again");
     }
 
     /** Puts the replacement launcher back as Home, or leaves the stock one on if that fails. */
