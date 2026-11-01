@@ -26,11 +26,16 @@ import java.net.Inet4Address;
 final class CastFixer {
     static final String SETUP = "com.google.android.tungsten.setupwraith";
     static final String STOCK_HOME = "com.google.android.apps.tv.launcherx";
+    private static final String CAST_RECEIVER = "com.google.android.apps.mediashell";
     private static final String ADB_WIFI = "adb_wifi_enabled";
     private static final String HOME_QUERY =
             "cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME";
-    /** The receiver retries loading every 60 s while it fails; leave room for one missed retry. */
-    private static final long CREDS_WAIT_MS = 100_000;
+    /** A receiver that has just started loads the credentials by itself once the wizard answers. */
+    private static final long SELF_LOAD_WAIT_MS = 20_000;
+    /** One that has been running without them doesn't ask again (cleanyourtv #2615): it is restarted. */
+    private static final long RESTART_WAIT_MS = 75_000;
+    /** The restarted receiver has to stay up: a copy that comes back after the wizard is off has no credentials. */
+    private static final long STABLE_MS = 20_000;
 
     private final Context context;
     private final FixLog log;
@@ -87,7 +92,22 @@ final class CastFixer {
         if (stockHomeWasOff) shell.run("pm enable --user 0 " + STOCK_HOME);
         shell.run("pm enable --user 0 " + SETUP);
         log.add("setup wizard on, waiting for the Cast receiver");
-        boolean signed = waitForSignature(CREDS_WAIT_MS);
+        boolean signed = waitForSignature(SELF_LOAD_WAIT_MS);
+        if (!signed) {
+            String pid = shell.run("pidof " + CAST_RECEIVER).trim();
+            log.add("the receiver (pid " + pid + ") did not load them; restarting it");
+            shell.run("am crash " + CAST_RECEIVER);
+            signed = waitForSignature(RESTART_WAIT_MS);
+        }
+        if (signed) {
+            String pid = shell.run("pidof " + CAST_RECEIVER).trim();
+            Thread.sleep(STABLE_MS);
+            String later = shell.run("pidof " + CAST_RECEIVER).trim();
+            if (!pid.equals(later)) {
+                log.add("the receiver restarted again (pid " + pid + " -> " + later + "); waiting for it");
+                signed = waitForSignature(RESTART_WAIT_MS);
+            }
+        }
         if (!signed) log.add("Cast credentials did not load in time");
         shell.run("pm disable-user --user 0 " + SETUP);
         if (stockHomeWasOff) restoreHome(shell, home);
