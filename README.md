@@ -33,15 +33,18 @@ whole packages, not single components (`Shell cannot change component state`).
 Once the receiver has loaded the credentials it keeps them in memory until it restarts. So after every
 boot Cast Fix:
 
-1. switches Wireless debugging on and connects to the TV's own adbd over loopback, with a key that was
+1. asks the receiver on `127.0.0.1:8009` to sign the device-auth challenge phones send; if it signs,
+   casting works and the run ends here, without touching Wireless debugging
+2. switches Wireless debugging on and connects to the TV's own adbd over loopback, with a key that was
    paired once
-2. switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then the setup
+3. switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then the setup
    wizard
-3. waits for the receiver's next retry to log `Created singleton instance of ClientAuthSigner`, which
-   took 7 to 14 seconds in testing (the receiver retries at most once a minute)
-4. switches the wizard and the stock launcher off again and puts your launcher back as Home, or leaves
-   the stock launcher on if that fails
-5. switches Wireless debugging off again
+4. gives the receiver 20 seconds to load the credentials by itself; a receiver that doesn't (one that has
+   been running for a while, or sometimes the one started at boot) is restarted with `am crash`, and the
+   new one signed within 4 to 6 seconds in testing
+5. switches the wizard and the stock launcher off again and puts your launcher back as Home, or leaves
+   the stock launcher on if that fails, and checks that the receiver still signs
+6. switches Wireless debugging off again
 
 A run at boot took about 20 seconds in testing. The **Cast Fix** tile in the app list does the same by hand, in
 case casting stops without a restart; when casting already works it only checks and says so.
@@ -70,8 +73,15 @@ adb shell am broadcast -n com.thayford.castfix/.PairReceiver --ei port <pairing 
 ```
 
 The app's screen now reads "Setup: paired · settings permission granted". Leave Developer options on;
-Wireless debugging itself can be off. Restart the TV and a "Cast Fix: Casting ready." message appears
-within a minute.
+Wireless debugging itself can be off.
+
+Android switches Wireless debugging on only on a network it was allowed on for good. The first time it is
+switched on, the TV asks "Allow wireless debugging on this network?": tick **Always allow on this
+network**, then Allow. Allowed only once, the TV asks again at every boot, nobody answers, and the run at
+boot ends with "Wireless debugging would not stay on". The permission belongs to the access point (its
+BSSID), so a mesh node, a repeater or the other band of the same router asks once more.
+
+Restart the TV and a "Cast Fix: Casting ready." message appears within a minute or two.
 
 ## Security
 
@@ -103,6 +113,13 @@ The screen shows the last result and the last lines of the log; everything also 
 ```sh
 adb shell settings put global castfix_keep_debugging 1     # settings delete global castfix_keep_debugging to undo
 ```
+
+"Wireless debugging would not stay on" means Android switched it straight back off, almost always because
+the network was not allowed for good (Install, above): switch Wireless debugging on once by hand and tick
+**Always allow on this network**.
+
+The receiver also loses its credentials when its process restarts without a reboot (it crashed one night in
+testing); the **Cast Fix** tile then brings casting back.
 
 Every adb command has a 20-second limit and is retried up to three times on a fresh connection.
 libadb's `open()` waits for adbd's OKAY without a timeout and can miss it when the answer arrives before

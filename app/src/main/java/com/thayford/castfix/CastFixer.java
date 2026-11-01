@@ -67,7 +67,7 @@ final class CastFixer {
         ContentResolver resolver = context.getContentResolver();
         boolean debuggingWasOn = Settings.Global.getInt(resolver, ADB_WIFI, 0) == 1;
         if (!debuggingWasOn && !switchDebuggingOn(resolver)) {
-            return log.result("Wireless debugging would not stay on (not on a network it was allowed on?).");
+            return log.result("Wireless debugging would not stay on: allow it on this network for good (README).");
         }
         // A paired key otherwise lapses after 7 days without a connection, and restarts can be further apart.
         Settings.Global.putLong(resolver, "adb_allowed_connection_time", 0L);
