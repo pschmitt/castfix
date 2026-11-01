@@ -106,7 +106,8 @@ public class MainActivity extends Activity {
         boolean granted = checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS)
                 == PackageManager.PERMISSION_GRANTED;
         setup.setText("Setup: " + (log.isPaired() ? "paired" : "NOT paired")
-                + " · settings permission " + (granted ? "granted" : "MISSING"));
+                + " · settings permission " + (granted ? "granted" : "MISSING")
+                + "\nLast receiver check: " + log.lastCheck());
         recent.setText(String.join("\n", log.tail(14)));
     }
 

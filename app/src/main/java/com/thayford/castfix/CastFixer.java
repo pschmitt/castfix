@@ -19,20 +19,17 @@ import java.net.Inet4Address;
  * (setupwraith's CastInfoProvider), and the wizard has to stay disabled for a replacement launcher to own
  * Home. The receiver keeps the credentials in memory once loaded, so after each boot: switch the wizard on
  * until the receiver has loaded them, then switch it and the stock launcher off again.
+ *
+ * Whether the receiver holds its credentials is read from the receiver itself (CastHealth: does it sign a
+ * device-auth challenge?), not from logcat, whose buffer the receiver fills within the hour.
  */
 final class CastFixer {
     static final String SETUP = "com.google.android.tungsten.setupwraith";
     static final String STOCK_HOME = "com.google.android.apps.tv.launcherx";
-    private static final String CAST_RECEIVER = "com.google.android.apps.mediashell";
-    private static final String CREDS_LOADED = "Created singleton instance of ClientAuthSigner";
-    private static final String CREDS_MISSING = "Cannot get device credentials";
-    private static final String WIZARD_ANSWERED = "querying cast infos";
     private static final String ADB_WIFI = "adb_wifi_enabled";
     private static final String HOME_QUERY =
             "cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME";
-    /** The receiver retries loading every 60 s while it fails. */
-    private static final long RETRY_WINDOW_S = 75;
-    /** Leave room for one missed retry. */
+    /** The receiver retries loading every 60 s while it fails; leave room for one missed retry. */
     private static final long CREDS_WAIT_MS = 100_000;
 
     private final Context context;
@@ -52,6 +49,11 @@ final class CastFixer {
         }
         String ip = waitForWifi(90_000);
         if (ip == null) return log.result("No Wi-Fi after 90 s; nothing changed.");
+        // A receiver that signs holds its credentials: nothing to do, and Wireless debugging stays as it is.
+        CastHealth.State state = CastHealth.check(5_000);
+        log.setLastCheck(state.name());
+        log.add("Cast receiver: " + describe(state));
+        if (state == CastHealth.State.SIGNED) return log.result("Casting already works.");
         ContentResolver resolver = context.getContentResolver();
         boolean debuggingWasOn = Settings.Global.getInt(resolver, ADB_WIFI, 0) == 1;
         Settings.Global.putInt(resolver, ADB_WIFI, 1);
@@ -77,34 +79,24 @@ final class CastFixer {
         if (!hasPackage(disabled, SETUP)) {
             return log.result("The setup wizard is on, so casting works without a fix.");
         }
-        if (credsLoaded(shell)) return log.result("Casting already works.");
         String home = lastLine(shell.run(HOME_QUERY));
         boolean stockHomeWasOff = hasPackage(disabled, STOCK_HOME);
-        String since = shell.run("date '+%m-%d %H:%M:%S.000'").trim();
         log.add("Home is " + home);
         // Stock launcher first: a Home press in the next minute then lands on it, not on the wizard's
         // RecoveryActivity (seen crash-looping system_server on other Google TV 14 builds).
         if (stockHomeWasOff) shell.run("pm enable --user 0 " + STOCK_HOME);
         shell.run("pm enable --user 0 " + SETUP);
         log.add("setup wizard on, waiting for the Cast receiver");
-        boolean loaded = false;
-        long answeredAt = 0;
-        long deadline = SystemClock.elapsedRealtime() + CREDS_WAIT_MS;
-        while (!loaded && SystemClock.elapsedRealtime() < deadline) {
-            Thread.sleep(3_000);
-            String castLog = shell.run("logcat -d -T '" + since + "' -s cast_shell:I"
-                    + " cast_ClientAuthCredsFactoryProvisioned:E 'SetupWraith|CastInfoProvider:I'");
-            int query = castLog.lastIndexOf(WIZARD_ANSWERED);
-            if (query >= 0 && answeredAt == 0) answeredAt = SystemClock.elapsedRealtime();
-            // Either the receiver says so, or the wizard answered it and no failure followed for a few seconds.
-            loaded = castLog.contains(CREDS_LOADED) || (query >= 0
-                    && castLog.indexOf(CREDS_MISSING, query) < 0
-                    && SystemClock.elapsedRealtime() - answeredAt >= 6_000);
-        }
-        log.add(loaded ? "Cast credentials loaded" : "Cast credentials did not load in time");
+        boolean signed = waitForSignature(CREDS_WAIT_MS);
+        if (!signed) log.add("Cast credentials did not load in time");
         shell.run("pm disable-user --user 0 " + SETUP);
         if (stockHomeWasOff) restoreHome(shell, home);
-        return log.result(loaded ? "Casting ready." : "Cast credentials did not load; run it again.");
+        // The receiver keeps them in memory, so this has to hold with the wizard off again.
+        CastHealth.State after = CastHealth.check(5_000);
+        log.setLastCheck(after.name());
+        log.add("with the setup wizard off: " + describe(after));
+        if (signed && after == CastHealth.State.SIGNED) return log.result("Casting ready.");
+        return log.result("Cast credentials did not load; run it again.");
     }
 
     /** Puts the replacement launcher back as Home, or leaves the stock one on if that fails. */
@@ -130,47 +122,24 @@ final class CastFixer {
         }
     }
 
-    /**
-     * True when the Cast receiver already holds its credentials: either its latest credentials message says
-     * they loaded, or it has been up longer than its retry interval without failing in that time. It retries
-     * once a minute for as long as loading fails, and stops once they load.
-     */
-    private boolean credsLoaded(Shell shell) throws Exception {
-        String castLog = shell.run("logcat -d -v epoch -s cast_shell:I cast_ClientAuthCredsFactoryProvisioned:E");
-        if (castLog.lastIndexOf(CREDS_LOADED) > castLog.lastIndexOf(CREDS_MISSING)) return true;
-        long upSeconds = elapsedSeconds(shell.run("ps -o etime= -p $(pidof " + CAST_RECEIVER + ")"));
-        if (upSeconds < RETRY_WINDOW_S) return false;
-        long now = Long.parseLong(shell.run("date +%s").trim());
-        long lastFailure = 0;
-        for (String line : castLog.split("\n")) {
-            if (!line.contains(CREDS_MISSING)) continue;
-            String[] fields = line.trim().split("\\s+");
-            try {
-                lastFailure = (long) Double.parseDouble(fields[0]);
-            } catch (NumberFormatException ignored) {
-                // not an epoch-stamped line
+    /** Polls the receiver until it signs a device-auth challenge, or the time is up. */
+    private boolean waitForSignature(long timeoutMs) throws InterruptedException {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while (SystemClock.elapsedRealtime() < deadline) {
+            Thread.sleep(3_000);
+            if (CastHealth.check(4_000) == CastHealth.State.SIGNED) {
+                log.add("Cast credentials loaded");
+                return true;
             }
         }
-        log.add("Cast receiver up " + upSeconds + " s, last credentials failure "
-                + (lastFailure == 0 ? "none in the log" : (now - lastFailure) + " s ago"));
-        return now - lastFailure > RETRY_WINDOW_S;
+        return false;
     }
 
-    /** Seconds from toybox `ps -o etime` ([[dd-]hh:]mm:ss), or 0 if it can't be read. */
-    private static long elapsedSeconds(String etime) {
-        String value = etime.trim();
-        try {
-            long days = 0;
-            int dash = value.indexOf('-');
-            if (dash > 0) {
-                days = Long.parseLong(value.substring(0, dash));
-                value = value.substring(dash + 1);
-            }
-            long seconds = 0;
-            for (String part : value.split(":")) seconds = seconds * 60 + Long.parseLong(part.trim());
-            return days * 86_400 + seconds;
-        } catch (NumberFormatException e) {
-            return 0; // receiver not running, or ps printed something else: treat as just started
+    private static String describe(CastHealth.State state) {
+        switch (state) {
+            case SIGNED: return "signs, credentials loaded";
+            case UNSIGNED: return "empty signature, no credentials";
+            default: return "not answering on port 8009";
         }
     }
 

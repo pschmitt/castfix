@@ -60,6 +60,18 @@ final class FixLog {
         return prefs.getBoolean("paired", false);
     }
 
+    /** The latest receiver check (CastHealth state), shown on the screen. */
+    void setLastCheck(String state) {
+        prefs.edit().putString("check", state).putLong("check_when", System.currentTimeMillis()).apply();
+    }
+
+    String lastCheck() {
+        long when = prefs.getLong("check_when", 0);
+        if (when == 0) return "none yet";
+        return prefs.getString("check", "") + " ("
+                + new SimpleDateFormat("EEE d MMM, HH:mm", Locale.getDefault()).format(new Date(when)) + ")";
+    }
+
     synchronized List<String> tail(int count) {
         List<String> lines = new ArrayList<>();
         if (file.exists()) {
