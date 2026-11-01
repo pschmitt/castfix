@@ -17,8 +17,9 @@ import java.net.Inet4Address;
 /**
  * On Chromecast with Google TV the Cast receiver gets its device credentials only from the setup wizard
  * (setupwraith's CastInfoProvider), and the wizard has to stay disabled for a replacement launcher to own
- * Home. The receiver keeps the credentials in memory once loaded, so after each boot: switch the wizard on
- * until the receiver has loaded them, then switch it and the stock launcher off again.
+ * Home. The receiver keeps the credentials in memory once loaded, so after each boot, and whenever the watchdog
+ * finds it running without them: switch the wizard on until the receiver has loaded them, then switch it and the
+ * stock launcher off again.
  *
  * Whether the receiver holds its credentials is read from the receiver itself (CastHealth: does it sign a
  * device-auth challenge?), not from logcat, whose buffer the receiver fills within the hour.
@@ -45,6 +46,11 @@ final class CastFixer {
         this.log = new FixLog(context);
     }
 
+    /** True when a run switched the wizard on and never got to switch it off again (killed, power cut). */
+    static boolean runWasInterrupted(Context context) {
+        return new FixLog(context).hasPending();
+    }
+
     /** Runs the whole fix and returns a one-line result for the screen. */
     String run(String trigger) {
         log.add("--- run (" + trigger + ")");
@@ -53,7 +59,7 @@ final class CastFixer {
             return log.result("Needs WRITE_SECURE_SETTINGS, granted once from a computer (README, Setup).");
         }
         String ip = waitForWifi(90_000);
-        if (ip == null) return log.result("No Wi-Fi after 90 s; nothing changed.");
+        if (ip == null) return retry("No Wi-Fi after 90 s; nothing changed.");
         boolean interrupted = log.hasPending();
         if (interrupted) {
             log.add("the last run was cut short with the setup wizard on; cleaning up first");
@@ -67,16 +73,16 @@ final class CastFixer {
         ContentResolver resolver = context.getContentResolver();
         boolean debuggingWasOn = Settings.Global.getInt(resolver, ADB_WIFI, 0) == 1;
         if (!debuggingWasOn && !switchDebuggingOn(resolver)) {
-            return log.result("Wireless debugging would not stay on: allow it on this network for good (README).");
+            return retry("Wireless debugging would not stay on: allow it on this network for good (README).");
         }
         // A paired key otherwise lapses after 7 days without a connection, and restarts can be further apart.
         Settings.Global.putLong(resolver, "adb_allowed_connection_time", 0L);
         try (Shell shell = new Shell(context, ip, log)) {
-            if (!shell.connect()) return log.result("Could not reach Wireless debugging on this TV.");
+            if (!shell.connect()) return retry("Could not reach Wireless debugging on this TV.");
             return fix(shell, interrupted);
         } catch (Exception e) {
             log.add("error: " + e);
-            return log.result("Failed: " + e.getMessage());
+            return retry("Failed: " + e.getMessage());
         } finally {
             // Troubleshooting: `settings put global castfix_keep_debugging 1` keeps it on to read the logs.
             if (!debuggingWasOn && Settings.Global.getInt(resolver, "castfix_keep_debugging", 0) != 1) {
@@ -131,7 +137,7 @@ final class CastFixer {
         log.setLastCheck(after.name());
         log.add("with the setup wizard off: " + describe(after));
         if (signed && after == CastHealth.State.SIGNED) return log.result("Casting ready.");
-        return log.result("Cast credentials did not load; run it again.");
+        return retry("Cast credentials did not load.");
     }
 
     /** Undoes a run that was cut short: the wizard off, and the replacement launcher back as Home. */
@@ -192,6 +198,12 @@ final class CastFixer {
             SystemClock.sleep(5_000);
         }
         return false;
+    }
+
+    /** Logs and shows the result, and asks the watchdog for another try in a couple of minutes. */
+    private String retry(String message) {
+        Watchdog.retrySoon(context);
+        return log.result(message + " Trying again in 2 minutes.");
     }
 
     private static String describe(CastHealth.State state) {

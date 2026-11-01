@@ -35,6 +35,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         log = new FixLog(this);
+        Watchdog.schedule(this);
         int pad = dp(48);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -107,7 +108,8 @@ public class MainActivity extends Activity {
                 == PackageManager.PERMISSION_GRANTED;
         setup.setText("Setup: " + (log.isPaired() ? "paired" : "NOT paired")
                 + " · settings permission " + (granted ? "granted" : "MISSING")
-                + "\nLast receiver check: " + log.lastCheck());
+                + "\nWatchdog: " + (Watchdog.isScheduled(this) ? "every 15 min" : "NOT scheduled")
+                + " · last receiver check " + log.lastCheck());
         recent.setText(String.join("\n", log.tail(14)));
     }
 

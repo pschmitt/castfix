@@ -85,7 +85,7 @@ final class FixLog {
         return prefs.getBoolean("pending_stock_off", false);
     }
 
-    /** The latest receiver check (CastHealth state), shown on the screen. */
+    /** The latest receiver check (CastHealth state), shown on the screen; kept out of the log, which it would fill. */
     void setLastCheck(String state) {
         prefs.edit().putString("check", state).putLong("check_when", System.currentTimeMillis()).apply();
     }

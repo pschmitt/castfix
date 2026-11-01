@@ -119,7 +119,9 @@ the network was not allowed for good (Install, above): switch Wireless debugging
 **Always allow on this network**.
 
 The receiver also loses its credentials when its process restarts without a reboot (it crashed one night in
-testing); the **Cast Fix** tile then brings casting back.
+testing). A watchdog job checks the receiver's signature every 15 minutes and runs the fix when it is empty,
+and a run that fails is tried again 2 minutes later; for the job to run on time, exempt the app from battery
+optimisation once: `adb shell dumpsys deviceidle whitelist +com.thayford.castfix`.
 
 Every adb command has a 20-second limit and is retried up to three times on a fresh connection.
 libadb's `open()` waits for adbd's OKAY without a timeout and can miss it when the answer arrives before

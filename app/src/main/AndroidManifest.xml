@@ -42,11 +42,18 @@
                 android:value="Reloads the Cast receiver's device credentials after boot" />
         </service>
 
+        <!-- Checks every 15 minutes that the Cast receiver still signs, and runs the fix if it doesn't. -->
+        <service
+            android:name=".Watchdog"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
