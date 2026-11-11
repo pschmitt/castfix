@@ -29,6 +29,7 @@ final class Shell implements Closeable {
     /** adbd can take a while to bring Wireless debugging up right after boot. */
     private static final long CONNECT_TIMEOUT_MS = 90_000;
     private static final int ATTEMPTS = 3;
+    private static final int TCP_PORT = 5555;
 
     private final Context context;
     private final String ip;
@@ -39,11 +40,38 @@ final class Shell implements Closeable {
         return thread;
     });
     private AdbManager adb;
+    /** Reconnect the way the first connection was made. */
+    private boolean viaTcp;
 
     Shell(Context context, String ip, FixLog log) {
         this.context = context;
         this.ip = ip;
         this.log = log;
+    }
+
+    /**
+     * Connects to the TV's adb over TCP (port 5555), which an owner who keeps network adb on already has. Fails fast
+     * when it is off or does not accept this app's key (no waiting for an on-screen prompt); false then.
+     */
+    boolean connectTcp() throws InterruptedException {
+        AdbManager manager = null;
+        try {
+            AdbManager attempt = new AdbManager(context);
+            manager = attempt;
+            Future<Boolean> connecting = pool.submit(() -> attempt.connect("127.0.0.1", TCP_PORT));
+            if (connecting.get(15, TimeUnit.SECONDS)) {
+                adb = manager;
+                viaTcp = true;
+                log.add("adb connected on 127.0.0.1:" + TCP_PORT);
+                return true;
+            }
+        } catch (InterruptedException e) {
+            throw e;
+        } catch (Exception e) {
+            log.add("adb over TCP not usable: " + describe(e));
+        }
+        closeQuietly(manager);
+        return false;
     }
 
     /** Connects to Wireless debugging on this TV; false if it didn't come up in time. */
@@ -93,7 +121,7 @@ final class Shell implements Closeable {
                 closeQuietly(current);
                 result.cancel(true);
                 if (attempt == ATTEMPTS) throw new IOException("adb kept stalling on `" + brief(command) + "`");
-                if (!connect()) throw new IOException("could not reconnect to adb");
+                if (!(viaTcp ? connectTcp() : connect())) throw new IOException("could not reconnect to adb");
             }
         }
     }

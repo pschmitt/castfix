@@ -85,6 +85,21 @@ final class FixLog {
         return prefs.getBoolean("pending_stock_off", false);
     }
 
+    /** Failed runs in a row since casting last worked: the watchdog stops its quick retries after a few. */
+    int failures() {
+        return prefs.getInt("failures", 0);
+    }
+
+    int addFailure() {
+        int count = failures() + 1;
+        prefs.edit().putInt("failures", count).apply();
+        return count;
+    }
+
+    void resetFailures() {
+        prefs.edit().remove("failures").apply();
+    }
+
     /** The latest receiver check (CastHealth state), shown on the screen; kept out of the log, which it would fill. */
     void setLastCheck(String state) {
         prefs.edit().putString("check", state).putLong("check_when", System.currentTimeMillis()).apply();

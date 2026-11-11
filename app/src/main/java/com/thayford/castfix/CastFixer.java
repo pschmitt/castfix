@@ -68,24 +68,30 @@ final class CastFixer {
             CastHealth.State state = CastHealth.check(5_000);
             log.setLastCheck(state.name());
             log.add("Cast receiver: " + describe(state));
-            if (state == CastHealth.State.SIGNED) return log.result("Casting already works.");
+            if (state == CastHealth.State.SIGNED) return ok("Casting already works.");
         }
         ContentResolver resolver = context.getContentResolver();
         boolean debuggingWasOn = Settings.Global.getInt(resolver, ADB_WIFI, 0) == 1;
-        if (!debuggingWasOn && !switchDebuggingOn(resolver)) {
-            return retry("Wireless debugging would not stay on: allow it on this network for good (README).");
-        }
-        // A paired key otherwise lapses after 7 days without a connection, and restarts can be further apart.
-        Settings.Global.putLong(resolver, "adb_allowed_connection_time", 0L);
+        boolean debuggingSwitchedOn = false;
         try (Shell shell = new Shell(context, ip, log)) {
-            if (!shell.connect()) return retry("Could not reach Wireless debugging on this TV.");
+            // adb over TCP first, when the owner keeps it on: no Wireless debugging, so no "Allow wireless debugging
+            // on this network?" prompt that nobody is there to answer at the hour a receiver restarts.
+            if (!shell.connectTcp()) {
+                debuggingSwitchedOn = !debuggingWasOn;
+                if (debuggingSwitchedOn && !switchDebuggingOn(resolver)) {
+                    return retry("Wireless debugging would not stay on: allow it on this network for good (README).");
+                }
+                // A paired key otherwise lapses after 7 days without a connection, and restarts can be further apart.
+                Settings.Global.putLong(resolver, "adb_allowed_connection_time", 0L);
+                if (!shell.connect()) return retry("Could not reach Wireless debugging on this TV.");
+            }
             return fix(shell, interrupted);
         } catch (Exception e) {
             log.add("error: " + e);
             return retry("Failed: " + e.getMessage());
         } finally {
             // Troubleshooting: `settings put global castfix_keep_debugging 1` keeps it on to read the logs.
-            if (!debuggingWasOn && Settings.Global.getInt(resolver, "castfix_keep_debugging", 0) != 1) {
+            if (debuggingSwitchedOn && Settings.Global.getInt(resolver, "castfix_keep_debugging", 0) != 1) {
                 Settings.Global.putInt(resolver, ADB_WIFI, 0);
                 log.add("Wireless debugging switched off again");
             }
@@ -97,10 +103,10 @@ final class CastFixer {
         if (interrupted) {
             recover(shell, disabled);
             disabled = shell.run("pm list packages -d");
-            if (CastHealth.check(5_000) == CastHealth.State.SIGNED) return log.result("Cleaned up; casting works.");
+            if (CastHealth.check(5_000) == CastHealth.State.SIGNED) return ok("Cleaned up; casting works.");
         }
         if (!hasPackage(disabled, SETUP)) {
-            return log.result("The setup wizard is on, so casting works without a fix.");
+            return ok("The setup wizard is on, so casting works without a fix.");
         }
         String home = lastLine(shell.run(HOME_QUERY));
         boolean stockHomeWasOff = hasPackage(disabled, STOCK_HOME);
@@ -116,7 +122,7 @@ final class CastFixer {
         if (!signed) {
             String pid = shell.run("pidof " + CAST_RECEIVER).trim();
             log.add("the receiver (pid " + pid + ") did not load them; restarting it");
-            shell.run("am crash " + CAST_RECEIVER);
+            shell.run("am crash --user 0 " + CAST_RECEIVER);
             signed = waitForSignature(RESTART_WAIT_MS);
         }
         if (signed) {
@@ -136,7 +142,7 @@ final class CastFixer {
         CastHealth.State after = CastHealth.check(5_000);
         log.setLastCheck(after.name());
         log.add("with the setup wizard off: " + describe(after));
-        if (signed && after == CastHealth.State.SIGNED) return log.result("Casting ready.");
+        if (signed && after == CastHealth.State.SIGNED) return ok("Casting ready.");
         return retry("Cast credentials did not load.");
     }
 
@@ -200,17 +206,31 @@ final class CastFixer {
         return false;
     }
 
-    /** Logs and shows the result, and asks the watchdog for another try in a couple of minutes. */
+    /** A result with casting working: the failures in a row start from zero again. */
+    private String ok(String message) {
+        log.resetFailures();
+        return log.result(message);
+    }
+
+    /**
+     * Logs and shows the result, and asks the watchdog for another try soon, a little later each time; after a few
+     * failures in a row it is left to the periodic check, so a fix that cannot work does not keep toggling
+     * Wireless debugging every few minutes.
+     */
     private String retry(String message) {
-        Watchdog.retrySoon(context);
-        return log.result(message + " Trying again in 2 minutes.");
+        int failures = log.addFailure();
+        if (failures > Watchdog.MAX_QUICK_RETRIES) {
+            return log.result(message + " Giving up for now; the next check is in 15 minutes.");
+        }
+        Watchdog.retrySoon(context, failures);
+        return log.result(message + " Trying again in " + Watchdog.retryDelayMinutes(failures) + " minutes.");
     }
 
     private static String describe(CastHealth.State state) {
         switch (state) {
             case SIGNED: return "signs, credentials loaded";
             case UNSIGNED: return "empty signature, no credentials";
-            default: return "not answering on port 8009";
+            default: return "not answering on port 8009 (frozen while idle, or not running)";
         }
     }
 

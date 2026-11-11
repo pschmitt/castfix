@@ -35,8 +35,9 @@ boot Cast Fix:
 
 1. asks the receiver on `127.0.0.1:8009` to sign the device-auth challenge phones send; if it signs,
    casting works and the run ends here, without touching Wireless debugging
-2. switches Wireless debugging on and connects to the TV's own adbd over loopback, with a key that was
-   paired once
+2. connects to the TV's own adbd over loopback: through adb over TCP (port 5555) when that is on and accepts
+   the app's key, which needs no Wireless debugging and no prompt on the TV; else by switching Wireless
+   debugging on, with a key that was paired once
 3. switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then the setup
    wizard
 4. gives the receiver 20 seconds to load the credentials by itself; a receiver that doesn't (one that has
@@ -75,7 +76,11 @@ adb shell am broadcast -n com.thayford.castfix/.PairReceiver --ei port <pairing 
 The app's screen now reads "Setup: paired · settings permission granted". Leave Developer options on;
 Wireless debugging itself can be off.
 
-Android switches Wireless debugging on only on a network it was allowed on for good. The first time it is
+If you keep network adb on (port 5555), the app can use it instead and skip all of the following: the first
+time, the TV asks "Allow USB debugging?" for the app's key (named CastFix); tick **Always allow**. Check with the
+Cast Fix tile: the log says `adb connected on 127.0.0.1:5555`.
+
+Without that, Android switches Wireless debugging on only on a network it was allowed on for good. The first time it is
 switched on, the TV asks "Allow wireless debugging on this network?": tick **Always allow on this
 network**, then Allow. Allowed only once, the TV asks again at every boot, nobody answers, and the run at
 boot ends with "Wireless debugging would not stay on". The permission belongs to the access point (its
@@ -119,9 +124,14 @@ the network was not allowed for good (Install, above): switch Wireless debugging
 **Always allow on this network**.
 
 The receiver also loses its credentials when its process restarts without a reboot (it crashed one night in
-testing). A watchdog job checks the receiver's signature every 15 minutes and runs the fix when it is empty,
-and a run that fails is tried again 2 minutes later; for the job to run on time, exempt the app from battery
-optimisation once: `adb shell dumpsys deviceidle whitelist +com.thayford.castfix`.
+testing). On the Google TV Streamer Android freezes the idle receiver, and a frozen receiver that is talked to is
+killed and comes back without its credentials. A watchdog job checks the receiver's signature every 15 minutes and
+runs the fix when it is empty (a receiver that does not answer at all is left alone: it is frozen, and nothing is
+broken yet),
+and a run that fails is tried again 2, 4 and 8 minutes later; after that only the 15-minute check tries again, so
+a fix that cannot work (Wireless debugging not allowed on the network, say) does not toggle it every few minutes.
+For the job to run on time, exempt the app from battery optimisation once:
+`adb shell dumpsys deviceidle whitelist +com.thayford.castfix`.
 
 Every adb command has a 20-second limit and is retried up to three times on a fresh connection.
 libadb's `open()` waits for adbd's OKAY without a timeout and can miss it when the answer arrives before
